@@ -12,7 +12,7 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass
 from telegram import Bot
 
-# Импорт конфигурации
+# config
 from config import PRIVATE_KEY, POLYGON_RPC_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 @dataclass
