@@ -5,12 +5,15 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os
 from eth_account import Account
-from eth_account.messages import encode_structured_data
+from eth_account.messages import encode_typed_data
 from web3 import Web3
 from decimal import Decimal
 from typing import List, Dict, Optional
 from dataclasses import dataclass
 from telegram import Bot
+
+# Импорт конфигурации
+from config import PRIVATE_KEY, POLYGON_RPC_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 @dataclass
 class BookParams:
@@ -40,7 +43,81 @@ class Market:
     fpmm: str
 
 class PolymarketClient:
-    # ... [The PolymarketClient class remains the same]
+    def __init__(self, private_key: str, polygon_rpc_url: str):
+        self.w3 = Web3(Web3.HTTPProvider(polygon_rpc_url))
+        self.account = Account.from_key(private_key)
+        self.address = self.account.address
+        self.base_url = "https://clob.polymarket.com"
+        self.session = aiohttp.ClientSession()
+
+    async def close(self):
+        await self.session.close()
+
+    def _get_auth_headers(self):
+        timestamp = int(time.time() * 1000)
+        nonce = 0  # Implement nonce management if required
+
+        domain = {
+            "name": "Polymarket CLOB",
+            "version": "1",
+            "chainId": 137,
+        }
+        message = {
+            "action": "Auth",
+            "timestamp": timestamp,
+            "nonce": nonce
+        }
+        data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                ],
+                "Auth": [
+                    {"name": "action", "type": "string"},
+                    {"name": "timestamp", "type": "uint256"},
+                    {"name": "nonce", "type": "uint256"},
+                ],
+            },
+            "domain": domain,
+            "primaryType": "Auth",
+            "message": message,
+        }
+
+        signed_message = self.account.sign_message(encode_typed_data(data))
+
+        return {
+            "POLY-ADDRESS": self.address,
+            "POLY-SIGNATURE": signed_message.signature.hex(),
+            "POLY-TIMESTAMP": str(timestamp),
+            "POLY-NONCE": str(nonce),
+        }
+
+    async def get_markets(self, next_cursor: str = "") -> Dict:
+        url = f"{self.base_url}/markets"
+        params = {"next_cursor": next_cursor}
+        async with self.session.get(url, params=params, headers=self._get_auth_headers()) as response:
+            return await response.json()
+
+    async def get_market(self, condition_id: str) -> Market:
+        url = f"{self.base_url}/markets/{condition_id}"
+        async with self.session.get(url, headers=self._get_auth_headers()) as response:
+            data = await response.json()
+            return Market(**data["market"])
+
+    async def get_order_book(self, token_id: str) -> Dict:
+        url = f"{self.base_url}/book"
+        params = {"token_id": token_id}
+        async with self.session.get(url, params=params, headers=self._get_auth_headers()) as response:
+            return await response.json()
+
+    async def get_spread(self, token_id: str) -> Decimal:
+        url = f"{self.base_url}/spread"
+        params = {"token_id": token_id}
+        async with self.session.get(url, params=params, headers=self._get_auth_headers()) as response:
+            data = await response.json()
+            return Decimal(data["spread"])
 
 class OrderbookMonitor:
     def __init__(self, private_key: str, polygon_rpc_url: str, telegram_bot_token: str, telegram_chat_id: str):
@@ -56,14 +133,12 @@ class OrderbookMonitor:
         self.logger = logging.getLogger('PolymarketMonitor')
         self.logger.setLevel(logging.INFO)
 
-        # Console handler
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
         console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
 
-        # File handler with rotation
         log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poly.log')
         file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=2)
         file_handler.setLevel(logging.INFO)
@@ -151,12 +226,7 @@ class OrderbookMonitor:
             self.logger.error(f"Failed to send Telegram alert: {str(e)}", exc_info=True)
 
 async def main():
-    private_key = "your_private_key_here"
-    polygon_rpc_url = "https://polygon-rpc.com"
-    telegram_bot_token = "your_telegram_bot_token_here"
-    telegram_chat_id = "your_telegram_chat_id_here"
-
-    monitor = OrderbookMonitor(private_key, polygon_rpc_url, telegram_bot_token, telegram_chat_id)
+    monitor = OrderbookMonitor(PRIVATE_KEY, POLYGON_RPC_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     try:
         await monitor.monitor_markets()
     finally:
